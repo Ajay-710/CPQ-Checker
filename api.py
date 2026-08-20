@@ -26,7 +26,7 @@ app.add_middleware(
 )
 
 MAX_DOMAINS_PER_REQUEST = 250
-MAX_SCAN_SECONDS = 40
+MAX_SCAN_SECONDS = 90
 
 def _get_scanner():
     """Return the loaded scanner; production workers must not reload mid-scan."""

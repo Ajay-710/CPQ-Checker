@@ -556,7 +556,7 @@ def detect_headers_cookies(headers_str, cookies_str):
 # ---------------------------------------------------------------------------
 # Network fetch
 # ---------------------------------------------------------------------------
-async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
+async def fetch(session, url, timeout, max_bytes, verify_ssl=True, retries=3):
     headers = {
         'User-Agent': user_agent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -571,7 +571,7 @@ async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
     }
     
     last_err = None
-    for attempt in range(3):
+    for attempt in range(max(1, retries)):
         try:
             async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers, ssl=verify_ssl) as r:
                 chunks = []
@@ -591,7 +591,8 @@ async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
                 return True, str(r.url), r.status, body, headers_str, cookies_str, ""
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
             last_err = e
-            await asyncio.sleep(1 * (attempt + 1))
+            if attempt < retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
         except Exception as e:
             last_err = e
             break
@@ -800,7 +801,7 @@ async def scan(session, domain, args):
     async def check_subdomain(sub):
         async with sub_sem:
             sub_url = "https://" + sub + "." + domain
-            x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES)
+            x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES, retries=1)
             if x[0]:
                 _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
                 res = detect(corpus, f"subdomain:{sub}")
@@ -819,7 +820,7 @@ async def scan(session, domain, args):
         path_sem = asyncio.Semaphore(5)
         async def check_path(path_url):
             async with path_sem:
-                x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES)
+                x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES, retries=1)
                 if x[0] and 200 <= x[2] < 400:
                     _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
                     return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
