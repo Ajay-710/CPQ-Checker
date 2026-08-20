@@ -9,6 +9,7 @@ function App() {
   const [domainsInput, setDomainsInput] = useState('')
   const [deepScan, setDeepScan] = useState(false)
   const [dragActive, setDragActive] = useState(false)
+  const [progress, setProgress] = useState(null)
   
   const eventSourceRef = useRef(null)
 
@@ -28,6 +29,7 @@ function App() {
 
   const handleStream = (url, options = {}) => {
     setResults([])
+    setProgress(null)
     setIsScanning(true)
     
     if (eventSourceRef.current) {
@@ -67,6 +69,12 @@ function App() {
                   setResults(prev => [resultObj, ...prev])
                 } catch (e) {
                   console.error('Error parsing result data:', e)
+                }
+              } else if (eventType === 'progress') {
+                try {
+                  setProgress(JSON.parse(eventData))
+                } catch (e) {
+                  console.error('Error parsing progress data:', e)
                 }
               } else if (eventType === 'done') {
                 setIsScanning(false)
@@ -205,7 +213,7 @@ function App() {
             {isScanning && (
               <div style={{display: 'flex', alignItems: 'center', gap: '1rem'}}>
                 <span style={{fontSize: '0.9rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                  <span className="loader"></span> Scanning target queue...
+                  <span className="loader"></span> {progress ? `Scanning ${progress.completed}/${progress.total} target${progress.total === 1 ? '' : 's'}...` : 'Starting scan...'}
                 </span>
                 <button className="btn" style={{padding: '0.4rem 0.8rem', fontSize: '0.8rem'}} onClick={stopScan}>[ STOP ]</button>
               </div>

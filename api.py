@@ -26,6 +26,7 @@ app.add_middleware(
 )
 
 MAX_DOMAINS_PER_REQUEST = 250
+MAX_SCAN_SECONDS = 35
 
 def _get_scanner():
     """Return the loaded scanner; production workers must not reload mid-scan."""
@@ -40,11 +41,20 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
     semaphore = asyncio.Semaphore(5)
     connector = aiohttp.TCPConnector(limit=80, limit_per_host=4, ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=connector) as session:
+        yield {"event": "progress", "data": json.dumps({"total": len(domains), "completed": 0})}
         
         async def process_domain(d):
             async with semaphore:
                 try:
-                    result = await scan_fn(session, d, args)
+                    result = await asyncio.wait_for(scan_fn(session, d, args), timeout=MAX_SCAN_SECONDS)
+                except asyncio.TimeoutError:
+                    result = {
+                        "domain": d, "final_url": "", "http_status": "",
+                        "cpq_detected": "NO", "cpq_vendor": "", "confidence": "NOT_DETECTED",
+                        "score": 0, "detection_method": "", "evidence": "",
+                        "scan_time_seconds": MAX_SCAN_SECONDS,
+                        "error": "Scan timed out after 35 seconds; retry with fewer targets or without deep crawl."
+                    }
                 except Exception as e:
                     import traceback
                     print(f"Error scanning {d}: {e}")
@@ -60,9 +70,12 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
 
         tasks = [asyncio.create_task(process_domain(d)) for d in domains]
         
+        completed = 0
         for coro in asyncio.as_completed(tasks):
             result = await coro
+            completed += 1
             yield {"event": "result", "data": json.dumps(result)}
+            yield {"event": "progress", "data": json.dumps({"total": len(domains), "completed": completed})}
             
         yield {"event": "done", "data": "scan complete"}
 

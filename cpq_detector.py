@@ -634,7 +634,8 @@ async def scan(session, domain, args):
     urls_to_try = [("https://" + domain, True), ("http://" + domain, True), ("https://" + domain, False)]
 
     for u, verify in urls_to_try:
-        x = await fetch(session, u, args.timeout, MAX_HTML_BYTES, verify_ssl=verify)
+        # Do not spend a full request timeout on each HTTPS/HTTP fallback.
+        x = await fetch(session, u, min(args.timeout, 10), MAX_HTML_BYTES, verify_ssl=verify)
         if x[0]:
             first = x
             break
@@ -713,7 +714,9 @@ async def scan(session, domain, args):
     # -----------------------------------------------------------------------
     async def check_subdomain(sub):
         sub_url = "https://" + sub + "." + domain
-        x = await fetch(session, sub_url, args.timeout, MAX_HTML_BYTES)
+        # Most nonexistent CPQ subdomains fail fast.  A short cap prevents a
+        # handful of filtered DNS/HTTPS hosts from holding the UI hostage.
+        x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES)
         if x[0]:
             _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
             res = detect(corpus, f"subdomain:{sub}")
@@ -732,7 +735,7 @@ async def scan(session, domain, args):
     # affect the result.
     if getattr(args, "scan_paths", True):
         async def check_path(path_url):
-            x = await fetch(session, path_url, min(args.timeout, 10), MAX_HTML_BYTES)
+            x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES)
             if x[0] and 200 <= x[2] < 400:
                 _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
                 return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
