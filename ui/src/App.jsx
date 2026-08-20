@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
 
+const API_BASE = import.meta.env.VITE_API_URL || ''
+
 function App() {
   const [results, setResults] = useState([])
   const [isScanning, setIsScanning] = useState(false)
@@ -81,7 +83,7 @@ function App() {
     e.preventDefault()
     if (!domainsInput.trim()) return
     
-    handleStream('http://localhost:8000/api/scan', {
+    handleStream(`${API_BASE}/api/scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domains: domainsInput, deep_scan: deepScan })
@@ -99,7 +101,7 @@ function App() {
     formData.append('file', file)
     formData.append('deep_scan', deepScan)
     
-    handleStream('http://localhost:8000/api/upload', {
+    handleStream(`${API_BASE}/api/upload`, {
       method: 'POST',
       body: formData
     })

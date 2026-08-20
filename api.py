@@ -5,6 +5,8 @@ import types
 from typing import List
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 import aiohttp
 
@@ -101,6 +103,21 @@ async def upload_file(file: UploadFile = File(...), deep_scan: str = Form("false
                 normalized_domains.append(d)
                 
     return EventSourceResponse(scan_domain_generator(normalized_domains, deep_scan=deep_scan_bool))
+
+# Mount the React static files
+import os
+ui_dist = os.path.join(os.path.dirname(__file__), "ui", "dist")
+if os.path.isdir(ui_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(ui_dist, "assets")), name="assets")
+    
+    @app.get("/{catchall:path}")
+    async def serve_react_app(catchall: str):
+        # Serve the index.html for any other route to support React Router (if used)
+        # Check if the requested file exists in dist, otherwise return index.html
+        requested_file = os.path.join(ui_dist, catchall)
+        if os.path.isfile(requested_file):
+            return FileResponse(requested_file)
+        return FileResponse(os.path.join(ui_dist, "index.html"))
 
 if __name__ == "__main__":
     import uvicorn
