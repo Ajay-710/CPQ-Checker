@@ -1,6 +1,8 @@
 import asyncio
 import csv
+import importlib
 import io
+import json
 import types
 from typing import List
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -10,8 +12,8 @@ from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 import aiohttp
 
-# Import functions from cpq_detector
-from cpq_detector import scan, norm
+# Import cpq_detector module (will be reloaded on each scan)
+import cpq_detector
 
 app = FastAPI(title="CPQ Detector API")
 
@@ -23,19 +25,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _get_scanner():
+    """Force-reload cpq_detector so code changes are always picked up."""
+    print("RELOADING MODULE: ", cpq_detector.__file__)
+    importlib.reload(cpq_detector)
+    return cpq_detector.scan, cpq_detector.norm
+
 async def scan_domain_generator(domains: List[str], deep_scan: bool = False, timeout: int = 20):
+    scan_fn, _ = _get_scanner()
     args = types.SimpleNamespace(timeout=timeout, scan_scripts=True, deep_scan=deep_scan)
     
-    # We will use a semaphore to limit concurrency
     semaphore = asyncio.Semaphore(10)
-    
     connector = aiohttp.TCPConnector(limit=20, limit_per_host=3, ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=connector) as session:
         
         async def process_domain(d):
             async with semaphore:
                 try:
-                    result = await scan(session, d, args)
+                    result = await scan_fn(session, d, args)
                 except Exception as e:
                     import traceback
                     print(f"Error scanning {d}: {e}")
@@ -51,10 +58,8 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
 
         tasks = [asyncio.create_task(process_domain(d)) for d in domains]
         
-        # As tasks complete, yield them to the SSE stream
         for coro in asyncio.as_completed(tasks):
             result = await coro
-            import json
             yield {"event": "result", "data": json.dumps(result)}
             
         yield {"event": "done", "data": "scan complete"}
@@ -62,6 +67,7 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
 
 @app.post("/api/scan")
 async def start_scan(request: Request):
+    _, norm_fn = _get_scanner()
     data = await request.json()
     domains_input = data.get("domains", [])
     if isinstance(domains_input, str):
@@ -71,7 +77,7 @@ async def start_scan(request: Request):
         
     normalized_domains = []
     for d in domains:
-        n = norm(d)
+        n = norm_fn(d)
         if n and n not in normalized_domains:
             normalized_domains.append(n)
             
@@ -81,16 +87,15 @@ async def start_scan(request: Request):
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...), deep_scan: str = Form("false")):
+    _, norm_fn = _get_scanner()
     content = await file.read()
     deep_scan_bool = deep_scan.lower() == "true"
     
-    # Decode CSV
     text = content.decode("utf-8-sig", errors="ignore")
     reader = csv.DictReader(io.StringIO(text))
     heads = reader.fieldnames or []
     lookup = {h.lower().strip(): h for h in heads}
     
-    # Try to find domain column
     col = next((lookup[x] for x in ("domain","domains","website","website_url","url","company_domain","company website") if x in lookup), None)
     if not col and heads:
         col = heads[0]
@@ -98,7 +103,7 @@ async def upload_file(file: UploadFile = File(...), deep_scan: str = Form("false
     normalized_domains = []
     if col:
         for row in reader:
-            d = norm(row.get(col, ""))
+            d = norm_fn(row.get(col, ""))
             if d and d not in normalized_domains:
                 normalized_domains.append(d)
                 
@@ -112,8 +117,6 @@ if os.path.isdir(ui_dist):
     
     @app.get("/{catchall:path}")
     async def serve_react_app(catchall: str):
-        # Serve the index.html for any other route to support React Router (if used)
-        # Check if the requested file exists in dist, otherwise return index.html
         requested_file = os.path.join(ui_dist, catchall)
         if os.path.isfile(requested_file):
             return FileResponse(requested_file)
