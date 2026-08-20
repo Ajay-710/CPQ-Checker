@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+aiohttp
+tldextract
+python-multipart
+sse-starlette
+beautifulsoup4
+fake-useragent

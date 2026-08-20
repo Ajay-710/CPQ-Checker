@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+node_modules/
+dist/
+build/
+cpq_checkpoint.json
+cpq_results.csv
+cpq_errors.csv
+*.tmp
+your_domains.csv
