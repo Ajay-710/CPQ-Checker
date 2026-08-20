@@ -33,8 +33,6 @@ function App() {
       eventSourceRef.current.close()
     }
     
-    // For POST with fetch, we can't use standard EventSource easily without external libraries if we send JSON body.
-    // However, we can use fetch and read the stream directly.
     fetch(url, options)
       .then(async response => {
         if (!response.ok) {
@@ -50,7 +48,7 @@ function App() {
           
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split('\n')
-          buffer = lines.pop() // keep the incomplete line in the buffer
+          buffer = lines.pop()
           
           let eventType = 'message'
           let eventData = ''
@@ -142,18 +140,21 @@ function App() {
 
   return (
     <>
-      <div className="hero">
-        <h1>CPQ Detector Pro</h1>
-        <p>Enter a domain or upload a CSV file to detect Configure, Price, Quote (CPQ) systems powered by our intelligent scanner.</p>
-      </div>
+      <header className="hero">
+        <div style={{marginBottom: '0.5rem'}}>
+          <span className="retro-tag">v2.0-zaggonaut</span>
+          <span className="retro-tag">retro-engine</span>
+        </div>
+        <h1>CPQ Detector</h1>
+      </header>
       
       <div className="controls-grid">
         <div className="glass-card">
+          <h2>Manual Scan</h2>
           <form onSubmit={handleManualSubmit}>
-            <div style={{marginBottom: '1rem'}}>
-              <h3>Manual Scan</h3>
-              <p style={{color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem'}}>Enter single or comma-separated domains.</p>
-            </div>
+            <p style={{fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem'}}>
+              Enter single or comma-separated domain targets:
+            </p>
             <div className="input-group">
               <input 
                 type="text" 
@@ -163,21 +164,21 @@ function App() {
                 disabled={isScanning}
               />
               <button className="btn" type="submit" disabled={isScanning || !domainsInput.trim()}>
-                {isScanning ? <span className="loader"></span> : 'Scan'}
+                {isScanning ? <span className="loader"></span> : '[ SCAN ]'}
               </button>
             </div>
-            <label style={{display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem'}}>
+            <label className="checkbox-container">
               <input type="checkbox" checked={deepScan} onChange={e => setDeepScan(e.target.checked)} disabled={isScanning} />
-              Enable Deep Scan (follows links to find evidence)
+              Enable Deep Crawl (crawl linked pages for fingerprints)
             </label>
           </form>
         </div>
 
         <div className="glass-card">
-          <div style={{marginBottom: '1rem'}}>
-            <h3>Bulk Upload</h3>
-            <p style={{color: 'var(--text-secondary)', fontSize: '0.9rem'}}>Upload a CSV file containing a domain column.</p>
-          </div>
+          <h2>Bulk CSV Upload</h2>
+          <p style={{fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem'}}>
+            Select a CSV list with website/domain columns:
+          </p>
           <label 
             className={`file-upload ${dragActive ? "drag-active" : ""}`}
             onDragEnter={handleDrag}
@@ -185,12 +186,12 @@ function App() {
             onDragOver={handleDrag}
             onDrop={handleDrop}
           >
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#171717" strokeWidth="2.5" strokeLinecap="square">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
               <polyline points="17 8 12 3 7 8"></polyline>
               <line x1="12" y1="3" x2="12" y2="15"></line>
             </svg>
-            <p>Drag and drop CSV or click to browse</p>
+            <p style={{fontWeight: 600, color: '#171717'}}>Drag & Drop CSV file here or click to browse</p>
             <input type="file" accept=".csv" onChange={handleFileUpload} disabled={isScanning} />
           </label>
         </div>
@@ -198,38 +199,54 @@ function App() {
 
       {(results.length > 0 || isScanning) && (
         <div className="results-container glass-card">
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-            <h3>Results ({results.length})</h3>
-            {isScanning && <span style={{display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--primary)'}}><span className="loader" style={{width: '16px', height: '16px', borderWidth: '2px'}}></span> Scanning...</span>}
-            {isScanning && <button className="btn" style={{padding: '0.5rem 1rem', background: 'rgba(255,255,255,0.1)'}} onClick={stopScan}>Stop</button>}
+          <div className="results-header">
+            <h2>Scan Output [{results.length}]</h2>
+            {isScanning && (
+              <div style={{display: 'flex', alignItems: 'center', gap: '1rem'}}>
+                <span style={{fontSize: '0.9rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                  <span className="loader"></span> Scanning target queue...
+                </span>
+                <button className="btn" style={{padding: '0.4rem 0.8rem', fontSize: '0.8rem'}} onClick={stopScan}>[ STOP ]</button>
+              </div>
+            )}
           </div>
           <div className="table-wrapper">
             <table>
               <thead>
                 <tr>
-                  <th>Domain</th>
+                  <th>Target Domain</th>
                   <th>Status</th>
-                  <th>Vendor</th>
+                  <th>Vendor Detected</th>
                   <th>Confidence</th>
-                  <th>Evidence</th>
+                  <th>Evidence Snippet</th>
                 </tr>
               </thead>
               <tbody>
                 {results.map((r, i) => (
                   <tr key={i}>
-                    <td>
-                      {r.final_url ? <a href={r.final_url} target="_blank" rel="noreferrer" style={{color: 'var(--primary)', textDecoration: 'none'}}>{r.domain}</a> : r.domain}
+                    <td style={{fontWeight: 600}}>
+                      {r.final_url ? (
+                        <a href={r.final_url} target="_blank" rel="noreferrer" style={{color: '#171717', textDecoration: 'underline', textUnderlineOffset: '4px'}}>
+                          {r.domain}
+                        </a>
+                      ) : r.domain}
                     </td>
-                    <td>{r.error ? <span title={r.error} style={{color: 'var(--danger)', cursor: 'help'}}>Error</span> : (r.http_status || 'N/A')}</td>
-                    <td style={{fontWeight: '600'}}>{r.cpq_vendor || '-'}</td>
+                    <td>
+                      {r.error ? (
+                        <span title={r.error} style={{color: 'var(--accent-red)', fontWeight: 700, cursor: 'help'}}>[ ERR ]</span>
+                      ) : (
+                        `HTTP ${r.http_status || '200'}`
+                      )}
+                    </td>
+                    <td style={{fontWeight: 700}}>{r.cpq_vendor || '-'}</td>
                     <td>{getConfidenceBadge(r.confidence)}</td>
                     <td className="evidence-cell" title={r.evidence}>{r.evidence || '-'}</td>
                   </tr>
                 ))}
                 {results.length === 0 && (
                   <tr>
-                    <td colSpan="5" style={{textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)'}}>
-                      No results yet. Start a scan to see data here.
+                    <td colSpan="5" style={{textAlign: 'center', padding: '2rem', color: 'var(--text-muted)'}}>
+                      No domains scanned yet. Submit a domain above to initialize scan stream.
                     </td>
                   </tr>
                 )}
