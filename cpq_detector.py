@@ -57,7 +57,7 @@ def reg(h):
  e=tldextract.extract(h); return ".".join(x for x in (e.domain,e.suffix) if x) or h
 
 def conf(s):
- return "CONFIRMED" if s>=90 else "LIKELY" if s>=60 else "POSSIBLE" if s>=30 else "NOT_DETECTED"
+ return "CONFIRMED" if s>=90 else "LIKELY" if s>=60 else "POSSIBLE" if s>=15 else "NOT_DETECTED"
 
 def snippet(t,a,b):
  return re.sub(r"\s+"," ",t[max(0,a-120):min(len(t),b+180)]).strip()
@@ -78,7 +78,18 @@ def detect(text,label):
  return out
 
 async def fetch(session,url,timeout,max_bytes, verify_ssl=True):
- headers = {'User-Agent': ua.random}
+ headers = {
+  'User-Agent': ua.random,
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Connection': 'keep-alive',
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1'
+ }
  try:
   async with session.get(url,allow_redirects=True,timeout=aiohttp.ClientTimeout(total=timeout), headers=headers, ssl=verify_ssl) as r:
    chunks=[]; n=0
