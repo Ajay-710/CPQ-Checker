@@ -39,7 +39,13 @@ FINGERPRINTS={
 "Mobileforce CPQ":{"strong":[r"mobileforce.*cpq",r"mobileforce.*quote"],"medium":[],"domains":["mobileforcesoftware.com"]},
 "Solidify CPQ":{"strong":[r"solidify.*cpq",r"solidify.*quote"],"medium":[],"domains":[]},
 "Veloce CPQ":{"strong":[r"veloce.*cpq",r"veloce configurator"],"medium":[],"domains":[]},
-"Ventas CPQ & SMS Solution":{"strong":[r"ventas.*cpq",r"ventas.*sms.*solution"],"medium":[],"domains":[]}
+"Ventas CPQ & SMS Solution":{"strong":[r"ventas.*cpq",r"ventas.*sms.*solution"],"medium":[],"domains":[]},
+"PROS CPQ":{"strong":[r"pros.*cpq",r"pros smart cpq"],"medium":[r"pros quote"],"domains":["pros.com"]},
+"DealHub CPQ":{"strong":[r"dealhub.*cpq",r"dealhub\.io"],"medium":[r"dealhub quote"],"domains":["dealhub.io"]},
+"Logik.io":{"strong":[r"logik\.io",r"logikio"],"medium":[],"domains":["logik.io"]},
+"Vlocity CPQ":{"strong":[r"vlocity.*cpq",r"vlocity configurator"],"medium":[r"vlocity quote"],"domains":["vlocity.com"]},
+"ThreeKit":{"strong":[r"threekit.*cpq",r"threekit 3d configurator"],"medium":[r"threekit"],"domains":["threekit.com"]},
+"Expedite Commerce":{"strong":[r"expedite.*commerce",r"expeditecommerce"],"medium":[],"domains":[]}
 }
 
 def stop_handler(*_):
@@ -108,11 +114,14 @@ def scripts(base, soup):
  return [urljoin(base, x.get('src')) for x in soup.find_all('script') if x.get('src') and urljoin(base, x.get('src')).startswith(("http://","https://"))][:MAX_SCRIPTS]
 
 def links(base, soup):
- kws=("configur","quote","pricing","price","build","custom","product","rfq","commerce")
+ kws=("configur","quote","pricing","price","build","custom","product","rfq","commerce", "partner", "dealer", "portal")
  host=reg(urlparse(base).netloc); out=[]; seen=set()
  for a in soup.find_all('a', href=True):
   u=urljoin(base,a['href'])
-  if u.startswith(("http://","https://")) and reg(urlparse(u).netloc)==host and any(k in u.lower() for k in kws) and u not in seen:seen.add(u);out.append(u)
+  txt=a.get_text().lower()
+  if u.startswith(("http://","https://")) and reg(urlparse(u).netloc)==host and u not in seen:
+   if any(k in u.lower() for k in kws) or any(k in txt for k in kws):
+    seen.add(u);out.append(u)
  return out[:MAX_LINKS]
 
 async def scan(session,domain,args):
@@ -146,12 +155,12 @@ async def scan(session,domain,args):
  raw_meta_scripts = str(soup.find_all(['script', 'meta']))
  search_corpus = visible_text + "\\n" + raw_meta_scripts + "\\n" + headers + "\\n" + cookies + "\\n" + url
  
- hits=detect(search_corpus,"homepage"); generic=bool(re.search(r"\bcpq\b|configure,?\s*price,?\s*quote",visible_text,re.I)); methods=["homepage"]
+ hits=detect(search_corpus,"homepage"); generic=bool(re.search(r"\bcpq\b|configure,?\s*price,?\s*quote|product\s*configurator|dealer\s*portal|b2b\s*commerce",visible_text,re.I)); methods=["homepage"]
  
  if args.scan_scripts:
   for su in scripts(url,soup):
    x=await fetch(session,su,args.timeout,MAX_ASSET_BYTES)
-   if x[0]:hits+=detect(x[3]+"\\n"+x[1],"script")
+   if x[0]:hits+=detect(x[3]+"\n"+x[1],"script")
   methods.append("scripts")
   
  if args.deep_scan:
@@ -161,8 +170,25 @@ async def scan(session,domain,args):
    if x[0]:
     page_soup = BeautifulSoup(x[3], 'html.parser')
     page_text = page_soup.get_text(separator=' ')
-    hits+=detect(page_text+"\\n"+str(page_soup.find_all(['script', 'meta']))+"\\n"+x[4]+"\\n"+x[1],"deep")
-    generic=generic or bool(re.search(r"\bcpq\b|configure,?\s*price,?\s*quote",page_text,re.I))
+    hits+=detect(page_text+"\n"+str(page_soup.find_all(['script', 'meta']))+"\n"+x[4]+"\n"+x[1],"deep")
+    generic=generic or bool(re.search(r"\bcpq\b|configure,?\s*price,?\s*quote|product\s*configurator|dealer\s*portal|b2b\s*commerce",page_text,re.I))
+   
+  subdomains = ["quote.", "partners.", "shop.", "store.", "b2b.", "portal."]
+  async def check_sub(sub):
+   su = "https://" + sub + domain
+   x = await fetch(session, su, args.timeout, MAX_HTML_BYTES)
+   if x[0]:
+    psoup = BeautifulSoup(x[3], 'html.parser')
+    ptext = psoup.get_text(separator=' ')
+    res = detect(ptext+"\n"+str(psoup.find_all(['script', 'meta']))+"\n"+x[4]+"\n"+x[1],"subdomain")
+    gen = bool(re.search(r"\bcpq\b|configure,?\s*price,?\s*quote|product\s*configurator|dealer\s*portal|b2b\s*commerce",ptext,re.I))
+    return res, gen
+   return [], False
+   
+  sub_results = await asyncio.gather(*[check_sub(sub) for sub in subdomains])
+  for s_hits, s_gen in sub_results:
+   hits+=s_hits
+   generic = generic or s_gen
   methods.append("deep")
   
  merged={}
