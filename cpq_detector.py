@@ -622,6 +622,20 @@ def generic_evidence(corpus, label):
     m = GENERIC_CPQ_RE.search(corpus)
     return f"[{label}] GENERIC: {snippet(corpus, m.start(), m.end())}" if m else ""
 
+def target_vendor(domain):
+    """Identify a CPQ vendor when the submitted host is its own domain.
+
+    This is an authoritative input-level signal and also gives a useful answer
+    when the vendor's website blocks automated page retrieval.
+    """
+    host = domain.lower().strip(".")
+    for vendor, fp in FINGERPRINTS.items():
+        for vendor_domain in fp["domains"]:
+            vendor_domain = vendor_domain.lower()
+            if host == vendor_domain or host.endswith("." + vendor_domain):
+                return vendor
+    return None
+
 # ---------------------------------------------------------------------------
 # Main scan function
 # ---------------------------------------------------------------------------
@@ -647,8 +661,26 @@ async def scan(session, domain, args):
         "scan_time_seconds": 0, "error": ""
     }
 
+    # A vendor's own domain is a deterministic identification signal.  Check
+    # it before network work so blocked vendor sites are never misreported as
+    # NOT_DETECTED.
+    known_vendor = target_vendor(domain)
+    if known_vendor:
+        result.update(
+            cpq_detected="YES", cpq_vendor=known_vendor,
+            confidence="CONFIRMED", score=100,
+            detection_method="target-domain",
+            evidence=f"[target-domain] Submitted host matches the official {known_vendor} domain"
+        )
+        result["scan_time_seconds"] = round(time.perf_counter() - start, 2)
+        return result
+
     if not first:
-        result["error"] = x[6] if x else "Connection failed"
+        result.update(
+            cpq_detected="UNKNOWN", confidence="SCAN_FAILED",
+            evidence="No HTTP response was received; this is not a negative CPQ finding.",
+            error=x[6] if x else "Connection failed"
+        )
         result["scan_time_seconds"] = round(time.perf_counter() - start, 2)
         return result
 

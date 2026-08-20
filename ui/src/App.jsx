@@ -141,7 +141,8 @@ function App() {
       'CONFIRMED': 'confirmed',
       'LIKELY': 'likely',
       'POSSIBLE': 'possible',
-      'NOT_DETECTED': 'none'
+      'NOT_DETECTED': 'none',
+      'SCAN_FAILED': 'error'
     }
     const c = map[confidence] || 'error'
     return <span className={`badge ${c}`}>{confidence}</span>
@@ -249,7 +250,7 @@ function App() {
                     </td>
                     <td style={{fontWeight: 700}}>{r.cpq_vendor || '-'}</td>
                     <td>{getConfidenceBadge(r.confidence)}</td>
-                    <td className="evidence-cell" title={r.evidence}>{r.evidence || '-'}</td>
+                    <td className="evidence-cell" title={r.error || r.evidence}>{r.error || r.evidence || '-'}</td>
                   </tr>
                 ))}
                 {results.length === 0 && (

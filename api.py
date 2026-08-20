@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 import aiohttp
 
-# Import cpq_detector module (will be reloaded on each scan)
+# Scanner module is loaded once per worker for predictable production behavior.
 import cpq_detector
 
 app = FastAPI(title="CPQ Detector API")
@@ -50,9 +50,10 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
                 except asyncio.TimeoutError:
                     result = {
                         "domain": d, "final_url": "", "http_status": "",
-                        "cpq_detected": "NO", "cpq_vendor": "", "confidence": "NOT_DETECTED",
-                        "score": 0, "detection_method": "", "evidence": "",
+                        "cpq_detected": "UNKNOWN", "cpq_vendor": "", "confidence": "SCAN_FAILED",
+                        "score": 0, "detection_method": "",
                         "scan_time_seconds": MAX_SCAN_SECONDS,
+                        "evidence": "No conclusion was reached because the scan exceeded the time limit.",
                         "error": "Scan timed out after 35 seconds; retry with fewer targets or without deep crawl."
                     }
                 except Exception as e:
@@ -61,10 +62,10 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
                     traceback.print_exc()
                     result = {
                         "domain": d, "final_url": "", "http_status": "", 
-                        "cpq_detected": "NO", "cpq_vendor": "", 
-                        "confidence": "NOT_DETECTED", "score": 0, 
-                        "detection_method": "", "evidence": "", 
-                        "scan_time_seconds": 0, "error": f"{type(e).__name__}: {e}"
+                        "cpq_detected": "UNKNOWN", "cpq_vendor": "", 
+                        "confidence": "SCAN_FAILED", "score": 0, 
+                        "detection_method": "",
+                        "scan_time_seconds": 0, "evidence": "No conclusion was reached because the scanner failed.", "error": f"{type(e).__name__}: {e}"
                     }
                 return result
 
