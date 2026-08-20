@@ -125,6 +125,20 @@ FINGERPRINTS = {
     "cookies": [],
     "headers": [],
 },
+"Pricefx": {
+    "strong": [r"pricefx.*cpq", r"price f\(?x\)?", r"pricefx\.com"],
+    "medium": [r"pricefx"],
+    "domains": ["pricefx.com", "pricefx.eu"],
+    "cookies": ["pricefx-session"],
+    "headers": [],
+},
+"Tacton CPQ": {
+    "strong": [r"tacton.*cpq", r"tacton configurator", r"tacton\.com", r"tactoncpq", r"tacton systems"],
+    "medium": [r"tacton"],
+    "domains": ["tacton.com"],
+    "cookies": ["tacton-session"],
+    "headers": [],
+},
 
 # --- Tier 2: Mid-market CPQ ---
 "Infor CPQ": {
