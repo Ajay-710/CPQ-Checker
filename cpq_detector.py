@@ -35,6 +35,13 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+]
+
 # ---------------------------------------------------------------------------
 # Subdomain wordlist — always probed for every domain
 # ---------------------------------------------------------------------------
@@ -420,14 +427,22 @@ GENERIC_CPQ_RE = re.compile(
     r"\bcpq\b"
     r"|configure[, ]+price[, ]+quote"
     r"|product\s*configurator"
+    r"|sales\s*configurator"
+    r"|pricing\s*engine"
+    r"|quoting\s*software"
+    r"|quote\s*to\s*cash"
+    r"|quote-to-cash"
+    r"|guided\s*selling"
+    r"|configure-price-quote"
     r"|dealer\s*portal"
     r"|b2b\s*commerce"
     r"|b2b\s*e[\-\s]*commerce"
     r"|partner\s*portal"
     r"|request\s+a?\s*quote"
     r"|get\s+a?\s*quote"
-    r"|build\s+your\s+own"
+    r"|build\s+your\s*own"
     r"|custom\s*configurator"
+    r"|configure\s+now"
     r"|product\s*builder"
     r"|quote\s*request"
     r"|rfq\s*form"
@@ -469,9 +484,11 @@ def snippet(t, a, b):
 def user_agent():
     """Return a usable UA even when fake-useragent has no cached data."""
     try:
+        if random.random() > 0.5:
+            return random.choice(USER_AGENTS)
         return ua.random or DEFAULT_USER_AGENT
     except Exception:
-        return DEFAULT_USER_AGENT
+        return random.choice(USER_AGENTS)
 
 def page_corpus(html, headers="", cookies="", final_url=""):
     """Include visible content *and* route/attribute metadata in detection.
@@ -544,9 +561,6 @@ async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
         'User-Agent': user_agent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        # Do not advertise Brotli unless the optional decoder is guaranteed to
-        # be installed. A response encoded as `br` otherwise fails before its
-        # HTML can be inspected (aiohttp ClientResponseError 400).
         'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
@@ -555,25 +569,34 @@ async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1'
     }
-    try:
-        async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers, ssl=verify_ssl) as r:
-            chunks = []
-            n = 0
-            async for c in r.content.iter_chunked(65536):
-                chunks.append(c)
-                n += len(c)
-                if n >= max_bytes:
-                    break
-            raw = b"".join(chunks)
-            try:
-                body = raw.decode(r.charset or "utf-8", errors="ignore")
-            except LookupError:
-                body = raw.decode("utf-8", errors="ignore")
-            headers_str = "\n".join(f"{k}: {v}" for k, v in r.headers.items())
-            cookies_str = "\n".join(f"{k}: {v.value}" for k, v in r.cookies.items())
-            return True, str(r.url), r.status, body, headers_str, cookies_str, ""
-    except Exception as e:
-        return False, url, "", "", "", "", "%s: %s" % (type(e).__name__, str(e)[:250])
+    
+    last_err = None
+    for attempt in range(3):
+        try:
+            async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers, ssl=verify_ssl) as r:
+                chunks = []
+                n = 0
+                async for c in r.content.iter_chunked(65536):
+                    chunks.append(c)
+                    n += len(c)
+                    if n >= max_bytes:
+                        break
+                raw = b"".join(chunks)
+                try:
+                    body = raw.decode(r.charset or "utf-8", errors="ignore")
+                except LookupError:
+                    body = raw.decode("utf-8", errors="ignore")
+                headers_str = "\n".join(f"{k}: {v}" for k, v in r.headers.items())
+                cookies_str = "\n".join(f"{k}: {v.value}" for k, v in r.cookies.items())
+                return True, str(r.url), r.status, body, headers_str, cookies_str, ""
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            last_err = e
+            await asyncio.sleep(1 * (attempt + 1))
+        except Exception as e:
+            last_err = e
+            break
+            
+    return False, url, "", "", "", "", "%s: %s" % (type(last_err).__name__, str(last_err)[:250])
 
 # ---------------------------------------------------------------------------
 # Extract script sources
@@ -622,8 +645,12 @@ def candidate_paths(base):
     return [root + path for path in CPQ_PATHS[:MAX_CANDIDATE_PATHS]]
 
 def generic_evidence(corpus, label):
-    m = GENERIC_CPQ_RE.search(corpus)
-    return f"[{label}] GENERIC: {snippet(corpus, m.start(), m.end())}" if m else ""
+    hits = []
+    for m in GENERIC_CPQ_RE.finditer(corpus):
+        matched_text = corpus[m.start():m.end()].lower()
+        if not any(matched_text in h.lower() for h in hits):
+            hits.append(f"[{label}] GENERIC: {snippet(corpus, m.start(), m.end())}")
+    return hits
 
 def target_vendor(domain):
     """Identify a CPQ vendor when the submitted host is its own domain.
@@ -722,7 +749,7 @@ async def scan(session, domain, args):
     generic_signals = []
     homepage_generic = generic_evidence(search_corpus, "homepage")
     if homepage_generic:
-        generic_signals.append(homepage_generic)
+        generic_signals.extend(homepage_generic)
     methods = ["homepage"]
 
     # -----------------------------------------------------------------------
@@ -766,44 +793,42 @@ async def scan(session, domain, args):
         methods.append("scripts")
 
     # -----------------------------------------------------------------------
-    # Signal 5: probe common CPQ subdomains in deep mode.  Doing this for every
-    # row in a large CSV creates hundreds of slow DNS/TLS attempts and harms
-    # both throughput and accuracy through self-induced timeouts.
+    # Signal 5: probe common CPQ subdomains in deep mode.
     # -----------------------------------------------------------------------
+    sub_sem = asyncio.Semaphore(5)
+    
     async def check_subdomain(sub):
-        sub_url = "https://" + sub + "." + domain
-        # Most nonexistent CPQ subdomains fail fast.  A short cap prevents a
-        # handful of filtered DNS/HTTPS hosts from holding the UI hostage.
-        x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES)
-        if x[0]:
-            _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
-            res = detect(corpus, f"subdomain:{sub}")
-            return res, generic_evidence(corpus, f"subdomain:{sub}")
-        return [], ""
+        async with sub_sem:
+            sub_url = "https://" + sub + "." + domain
+            x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES)
+            if x[0]:
+                _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
+                res = detect(corpus, f"subdomain:{sub}")
+                return res, generic_evidence(corpus, f"subdomain:{sub}")
+            return [], []
 
-    if getattr(args, "scan_subdomains", False):
-        sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
-        for s_hits, s_gen in sub_results:
-            hits += s_hits
-            if s_gen:
-                generic_signals.append(s_gen)
-        methods.append("subdomains")
+    sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
+    for s_hits, s_gen in sub_results:
+        hits += s_hits
+        if s_gen:
+            generic_signals.extend(s_gen)
+    methods.append("subdomains")
 
-    # Signal 6: probe a small set of common configurator routes.  Run in
-    # parallel and only retain successful CPQ evidence, so normal 404s do not
-    # affect the result.
+    # Signal 6: probe a small set of common configurator routes.
     if getattr(args, "scan_paths", True):
+        path_sem = asyncio.Semaphore(5)
         async def check_path(path_url):
-            x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES)
-            if x[0] and 200 <= x[2] < 400:
-                _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
-                return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
-            return [], ""
+            async with path_sem:
+                x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES)
+                if x[0] and 200 <= x[2] < 400:
+                    _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
+                    return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
+                return [], []
         path_results = await asyncio.gather(*[check_path(p) for p in candidate_paths(url)])
         for p_hits, p_generic in path_results:
             hits += p_hits
             if p_generic:
-                generic_signals.append(p_generic)
+                generic_signals.extend(p_generic)
         methods.append("paths")
 
     # -----------------------------------------------------------------------
@@ -820,7 +845,7 @@ async def scan(session, domain, args):
                 hits += detect(corpus, "deep")
                 deep_generic = generic_evidence(corpus, "deep")
                 if deep_generic:
-                    generic_signals.append(deep_generic)
+                    generic_signals.extend(deep_generic)
         methods.append("deep")
 
     # -----------------------------------------------------------------------
@@ -843,12 +868,14 @@ async def scan(session, domain, args):
             evidence=" | ".join(list(dict.fromkeys(merged[v][1]))[:8])
         )
     elif generic_signals:
+        unique_signals = list(dict.fromkeys(generic_signals))
+        score = 15 if len(unique_signals) == 1 else min(45, 15 + (len(unique_signals) * 10))
         result.update(
             cpq_detected="YES",
-            confidence="POSSIBLE",
-            score=15,
+            confidence=conf(score),
+            score=score,
             cpq_vendor="Generic CPQ / B2B commerce",
-            evidence=" | ".join(list(dict.fromkeys(generic_signals))[:4])
+            evidence=" | ".join(unique_signals[:8])
         )
 
     result["cpq_detected"] = "YES" if result["confidence"] != "NOT_DETECTED" else "NO"
