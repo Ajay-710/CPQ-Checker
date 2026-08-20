@@ -34,7 +34,12 @@ def _get_scanner():
 
 async def scan_domain_generator(domains: List[str], deep_scan: bool = False, timeout: int = 20):
     scan_fn, _ = _get_scanner()
-    args = types.SimpleNamespace(timeout=max(3, min(timeout, 30)), scan_scripts=True, deep_scan=deep_scan, scan_paths=True)
+    # Standard scans use homepage/assets only. Deep Crawl opts into the costly
+    # route and subdomain reconnaissance needed for harder-to-find tools.
+    args = types.SimpleNamespace(
+        timeout=max(3, min(timeout, 30)), scan_scripts=True, deep_scan=deep_scan,
+        scan_paths=deep_scan, scan_subdomains=deep_scan,
+    )
     
     # Each target scans several assets and routes concurrently.  Keep target
     # concurrency conservative so Render instances are not overloaded.

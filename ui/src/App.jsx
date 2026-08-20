@@ -13,7 +13,6 @@ function App() {
   const [scanError, setScanError] = useState('')
   
   const eventSourceRef = useRef(null)
-  const scanTimeoutRef = useRef(null)
   const abortReasonRef = useRef('')
 
   const stopScan = () => {
@@ -21,10 +20,6 @@ function App() {
     if (eventSourceRef.current) {
       eventSourceRef.current.abort()
       eventSourceRef.current = null
-    }
-    if (scanTimeoutRef.current) {
-      clearTimeout(scanTimeoutRef.current)
-      scanTimeoutRef.current = null
     }
     setIsScanning(false)
   }
@@ -48,12 +43,6 @@ function App() {
 
     const controller = new AbortController()
     eventSourceRef.current = controller
-    // This is a final client-side safety net. The API has its own 25-second
-    // target timeout, but a dropped proxy connection must not lock the UI.
-    scanTimeoutRef.current = setTimeout(() => {
-      abortReasonRef.current = 'Scan stopped after 35 seconds without a result.'
-      controller.abort()
-    }, 35000)
     
     fetch(url, { ...options, signal: controller.signal })
       .then(async response => {
@@ -117,10 +106,6 @@ function App() {
         setIsScanning(false)
       })
       .finally(() => {
-        if (scanTimeoutRef.current) {
-          clearTimeout(scanTimeoutRef.current)
-          scanTimeoutRef.current = null
-        }
         if (eventSourceRef.current === controller) {
           eventSourceRef.current = null
         }
@@ -180,7 +165,8 @@ function App() {
       'LIKELY': 'likely',
       'POSSIBLE': 'possible',
       'NOT_DETECTED': 'none',
-      'SCAN_FAILED': 'error'
+      'SCAN_FAILED': 'error',
+      'ACCESS_RESTRICTED': 'error'
     }
     const c = map[confidence] || 'error'
     return <span className={`badge ${c}`}>{confidence}</span>

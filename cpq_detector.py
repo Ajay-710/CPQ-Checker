@@ -22,7 +22,7 @@ RESULTS_FILE = "cpq_results.csv"
 ERRORS_FILE = "cpq_errors.csv"
 MAX_HTML_BYTES = 2_500_000
 MAX_ASSET_BYTES = 1_500_000
-MAX_SCRIPTS = 25
+MAX_SCRIPTS = 12
 MAX_LINKS = 20
 MAX_CANDIDATE_PATHS = 14
 SAVE_EVERY = 100
@@ -687,6 +687,16 @@ async def scan(session, domain, args):
     _, url, status, html, headers, cookies, _ = first
     result.update(final_url=url, http_status=status)
 
+    # A WAF, login wall, or rate limit prevents a defensible negative result.
+    # Preserve the HTTP status and make the uncertainty explicit.
+    if status in (401, 403, 429):
+        result.update(
+            cpq_detected="UNKNOWN", confidence="ACCESS_RESTRICTED",
+            evidence=f"HTTP {status} prevented public-content inspection; this is not a negative CPQ finding."
+        )
+        result["scan_time_seconds"] = round(time.perf_counter() - start, 2)
+        return result
+
     # -----------------------------------------------------------------------
     # Signal 1: Parse homepage HTML
     # -----------------------------------------------------------------------
@@ -742,7 +752,9 @@ async def scan(session, domain, args):
         methods.append("scripts")
 
     # -----------------------------------------------------------------------
-    # Signal 5: ALWAYS probe common CPQ subdomains (concurrently)
+    # Signal 5: probe common CPQ subdomains in deep mode.  Doing this for every
+    # row in a large CSV creates hundreds of slow DNS/TLS attempts and harms
+    # both throughput and accuracy through self-induced timeouts.
     # -----------------------------------------------------------------------
     async def check_subdomain(sub):
         sub_url = "https://" + sub + "." + domain
@@ -755,12 +767,13 @@ async def scan(session, domain, args):
             return res, generic_evidence(corpus, f"subdomain:{sub}")
         return [], ""
 
-    sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
-    for s_hits, s_gen in sub_results:
-        hits += s_hits
-        if s_gen:
-            generic_signals.append(s_gen)
-    methods.append("subdomains")
+    if getattr(args, "scan_subdomains", False):
+        sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
+        for s_hits, s_gen in sub_results:
+            hits += s_hits
+            if s_gen:
+                generic_signals.append(s_gen)
+        methods.append("subdomains")
 
     # Signal 6: probe a small set of common configurator routes.  Run in
     # parallel and only retain successful CPQ evidence, so normal 404s do not
@@ -951,7 +964,9 @@ def main():
     p.add_argument("--no-script-scan", dest="scan_scripts", action="store_false")
     p.add_argument("--no-path-scan", dest="scan_paths", action="store_false",
                    help="skip common quote/configurator routes for a faster scan")
-    p.set_defaults(scan_scripts=True, scan_paths=True)
+    p.add_argument("--no-subdomain-scan", dest="scan_subdomains", action="store_false",
+                   help="skip CPQ subdomain probing for a faster scan")
+    p.set_defaults(scan_scripts=True, scan_paths=True, scan_subdomains=True)
     p.add_argument("--resume", action="store_true")
     a = p.parse_args()
     if not os.path.exists(a.input):
