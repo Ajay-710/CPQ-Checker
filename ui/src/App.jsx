@@ -27,6 +27,7 @@ function App() {
   }, [])
 
   const handleStream = (url, options = {}) => {
+    setResults([])
     setIsScanning(true)
     
     if (eventSourceRef.current) {
