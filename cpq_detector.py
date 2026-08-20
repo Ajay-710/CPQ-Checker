@@ -448,6 +448,9 @@ GENERIC_CPQ_RE = re.compile(
     r"|quote-to-cash"
     r"|guided\s*selling"
     r"|configure-price-quote"
+    r"|configure\s*to\s*order"
+    r"|engineer\s*to\s*order"
+    r"|\bb2b\s*ecommerce"
     r"|dealer\s*portal"
     r"|b2b\s*commerce"
     r"|b2b\s*e[\-\s]*commerce"
@@ -788,49 +791,40 @@ async def scan(session, domain, args):
             break  # Only need one embed match
 
     # -----------------------------------------------------------------------
-    # Signal 4: External script scanning
+    # Signal 4-7: Fully Concurrent Scanning of Assets, Subdomains, Paths, Deep Links
     # -----------------------------------------------------------------------
-    if args.scan_scripts:
+    async def scan_scripts():
+        if not args.scan_scripts: return
         script_soup = BeautifulSoup(html, 'html.parser')
         script_urls = extract_scripts(url, script_soup)
         for su in script_urls:
-            # First check if the script URL itself contains vendor domains
-            url_hits = detect(su, "script_url")
-            hits += url_hits
-        # Asset requests are independent; sequential fetching made one slow CDN
-        # hold up the entire target scan.
+            hits.extend(detect(su, "script_url"))
         script_fetches = await asyncio.gather(*[
             fetch(session, su, min(args.timeout, 5), MAX_ASSET_BYTES) for su in script_urls
         ])
         for x in script_fetches:
             if x[0]:
-                hits += detect(x[3] + "\n" + x[1], "script")
+                hits.extend(detect(x[3] + "\n" + x[1], "script"))
         methods.append("scripts")
 
-    # -----------------------------------------------------------------------
-    # Signal 5: probe common CPQ subdomains in deep mode.
-    # -----------------------------------------------------------------------
-    sub_sem = asyncio.Semaphore(5)
-    
-    async def check_subdomain(sub):
-        async with sub_sem:
-            sub_url = "https://" + sub + "." + domain
-            x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES, retries=1)
-            if x[0]:
-                _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
-                res = detect(corpus, f"subdomain:{sub}")
-                return res, generic_evidence(corpus, f"subdomain:{sub}")
-            return [], []
-
-    sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
-    for s_hits, s_gen in sub_results:
-        hits += s_hits
-        if s_gen:
+    async def scan_subdomains():
+        sub_sem = asyncio.Semaphore(5)
+        async def check_subdomain(sub):
+            async with sub_sem:
+                sub_url = "https://" + sub + "." + domain
+                x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES, retries=1)
+                if x[0]:
+                    _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
+                    return detect(corpus, f"subdomain:{sub}"), generic_evidence(corpus, f"subdomain:{sub}")
+                return [], []
+        sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
+        for s_hits, s_gen in sub_results:
+            hits.extend(s_hits)
             generic_signals.extend(s_gen)
-    methods.append("subdomains")
+        methods.append("subdomains")
 
-    # Signal 6: probe a small set of common configurator routes.
-    if getattr(args, "scan_paths", True):
+    async def scan_paths():
+        if not getattr(args, "scan_paths", True): return
         path_sem = asyncio.Semaphore(5)
         async def check_path(path_url):
             async with path_sem:
@@ -841,27 +835,30 @@ async def scan(session, domain, args):
                 return [], []
         path_results = await asyncio.gather(*[check_path(p) for p in candidate_paths(url)])
         for p_hits, p_generic in path_results:
-            hits += p_hits
-            if p_generic:
-                generic_signals.extend(p_generic)
+            hits.extend(p_hits)
+            generic_signals.extend(p_generic)
         methods.append("paths")
 
-    # -----------------------------------------------------------------------
-    # Signal 7: Deep link crawling (optional, but more thorough)
-    # -----------------------------------------------------------------------
-    if args.deep_scan:
+    async def scan_deep():
+        if not args.deep_scan: return
         deep_soup = BeautifulSoup(html, 'html.parser')
-        for lu in extract_links(url, deep_soup):
-            if STOP:
-                break
-            x = await fetch(session, lu, args.timeout, MAX_HTML_BYTES)
-            if x[0]:
-                _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
-                hits += detect(corpus, "deep")
-                deep_generic = generic_evidence(corpus, "deep")
-                if deep_generic:
-                    generic_signals.extend(deep_generic)
+        links = extract_links(url, deep_soup)
+        deep_sem = asyncio.Semaphore(5)
+        async def check_deep(lu):
+            async with deep_sem:
+                x = await fetch(session, lu, min(args.timeout, 7), MAX_HTML_BYTES, retries=1)
+                if x[0]:
+                    _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
+                    return detect(corpus, "deep"), generic_evidence(corpus, "deep")
+                return [], []
+        deep_results = await asyncio.gather(*[check_deep(lu) for lu in links])
+        for d_hits, d_generic in deep_results:
+            hits.extend(d_hits)
+            generic_signals.extend(d_generic)
         methods.append("deep")
+
+    # Run all non-blocking I/O tasks simultaneously
+    await asyncio.gather(scan_scripts(), scan_subdomains(), scan_paths(), scan_deep())
 
     # -----------------------------------------------------------------------
     # Merge results and determine confidence
