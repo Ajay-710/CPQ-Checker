@@ -72,7 +72,7 @@ FINGERPRINTS = {
 "Oracle CPQ": {
     "strong": [r"/cpq/rest/", r"/bmi/", r"oraclecpq", r"cpq\.oraclecloud", r"bigmachines", r"bm\.oracle", r"BIGipServer[a-zA-Z0-9_]*CPQ"],
     "medium": [r"oracle.*cpq", r"oracle commerce"],
-    "domains": ["oraclecloud.com", "bigmachines.com"],
+    "domains": ["oracle.com", "oraclecloud.com", "bigmachines.com"],
     "cookies": ["ORA_CPQ", "BIGMACHINES"],
     "headers": ["x-oracle-cpq"],
 },
@@ -642,18 +642,6 @@ def target_vendor(domain):
 async def scan(session, domain, args):
     print(f"[SCAN V2] Starting scan for {domain}, deep_scan={args.deep_scan}, scan_scripts={args.scan_scripts}")
     start = time.perf_counter()
-    first = None
-
-    # Try HTTPS first, if fails try HTTP, if fails try HTTPS without SSL verification
-    urls_to_try = [("https://" + domain, True), ("http://" + domain, True), ("https://" + domain, False)]
-
-    for u, verify in urls_to_try:
-        # Do not spend a full request timeout on each HTTPS/HTTP fallback.
-        x = await fetch(session, u, min(args.timeout, 10), MAX_HTML_BYTES, verify_ssl=verify)
-        if x[0]:
-            first = x
-            break
-
     result = {
         "domain": domain, "final_url": "", "http_status": "",
         "cpq_detected": "NO", "cpq_vendor": "", "confidence": "NOT_DETECTED",
@@ -674,6 +662,17 @@ async def scan(session, domain, args):
         )
         result["scan_time_seconds"] = round(time.perf_counter() - start, 2)
         return result
+
+    first = None
+    x = None
+    # Try HTTPS first, if fails try HTTP, if fails try HTTPS without SSL verification.
+    urls_to_try = [("https://" + domain, True), ("http://" + domain, True), ("https://" + domain, False)]
+    for u, verify in urls_to_try:
+        # Do not spend a full request timeout on each HTTPS/HTTP fallback.
+        x = await fetch(session, u, min(args.timeout, 10), MAX_HTML_BYTES, verify_ssl=verify)
+        if x[0]:
+            first = x
+            break
 
     if not first:
         result.update(

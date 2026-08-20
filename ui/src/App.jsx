@@ -10,6 +10,7 @@ function App() {
   const [deepScan, setDeepScan] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [progress, setProgress] = useState(null)
+  const [scanError, setScanError] = useState('')
   
   const eventSourceRef = useRef(null)
 
@@ -30,6 +31,7 @@ function App() {
   const handleStream = (url, options = {}) => {
     setResults([])
     setProgress(null)
+    setScanError('')
     setIsScanning(true)
     
     if (eventSourceRef.current) {
@@ -44,6 +46,7 @@ function App() {
         const reader = response.body.getReader()
         const decoder = new TextDecoder('utf-8')
         let buffer = ''
+        let receivedDone = false
         
         while (true) {
           const { done, value } = await reader.read()
@@ -77,14 +80,23 @@ function App() {
                   console.error('Error parsing progress data:', e)
                 }
               } else if (eventType === 'done') {
+                receivedDone = true
                 setIsScanning(false)
               }
             }
           }
         }
+
+        // A proxy/deployment can close an SSE connection before the backend
+        // sends its done event. Never leave the controls permanently locked.
+        if (!receivedDone) {
+          setScanError('Scan connection closed before a result was returned. Please retry; if it repeats, check the service logs.')
+          setIsScanning(false)
+        }
       })
       .catch(err => {
         console.error('Stream error:', err)
+        setScanError(`Scan request failed: ${err.message}`)
         setIsScanning(false)
       })
   }
@@ -220,6 +232,7 @@ function App() {
               </div>
             )}
           </div>
+          {scanError && <p style={{color: 'var(--accent-red)', fontWeight: 600, margin: '0 0 1rem'}}>{scanError}</p>}
           <div className="table-wrapper">
             <table>
               <thead>
