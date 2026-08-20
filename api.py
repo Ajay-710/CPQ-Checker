@@ -42,9 +42,9 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
     )
     
     # A target scans several assets concurrently. Restricting target-level
-    # work avoids exhausting Render sockets during large uploads.
-    semaphore = asyncio.Semaphore(15)
-    connector = aiohttp.TCPConnector(limit=300, limit_per_host=3, ttl_dns_cache=300)
+    # concurrency prevents socket starvation and DNS timeouts on cloud servers.
+    semaphore = asyncio.Semaphore(4)
+    connector = aiohttp.TCPConnector(limit=100, limit_per_host=3, ttl_dns_cache=300)
     # Honor organization-approved standard proxy variables when configured.
     async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
         yield {"event": "progress", "data": json.dumps({"total": len(domains), "completed": 0})}
@@ -60,7 +60,7 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
                         "score": 0, "detection_method": "",
                         "scan_time_seconds": MAX_SCAN_SECONDS,
                         "evidence": "No conclusion was reached because the scan exceeded the time limit.",
-                        "error": "Scan timed out after 40 seconds. The target may be slow or unreachable from this service."
+                        "error": f"Scan timed out after {MAX_SCAN_SECONDS} seconds. The target may be slow or unreachable from this service."
                     }
                 except Exception as e:
                     import traceback

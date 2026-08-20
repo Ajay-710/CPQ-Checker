@@ -573,18 +573,12 @@ def detect_headers_cookies(headers_str, cookies_str):
 # ---------------------------------------------------------------------------
 # Network fetch
 # ---------------------------------------------------------------------------
-async def fetch(session, url, timeout, max_bytes, verify_ssl=True, retries=3):
+async def fetch(session, url, timeout, max_bytes, verify_ssl=False, retries=2):
     headers = {
         'User-Agent': user_agent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
+        'Accept-Language': 'en-US,en;q=0.9',
         'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1'
     }
     
     last_err = None
@@ -715,14 +709,13 @@ async def scan(session, domain, args):
     x = None
     blocked_responses = []
     # Prefer modern HTTPS endpoints; most sites that do not serve the apex
-    # host serve `www`. This keeps a failed host from consuming the full scan
-    # budget before content inspection begins.
-    urls_to_try = [("https://" + domain, True)]
-    if not domain.startswith("www."):
-        urls_to_try.append(("https://www." + domain, True))
-    for u, verify in urls_to_try:
-        # Do not spend a full request timeout on each HTTPS/HTTP fallback.
-        x = await fetch(session, u, min(args.timeout, 7), MAX_HTML_BYTES, verify_ssl=verify)
+    urls_to_try = [
+        "https://" + domain,
+        "https://www." + domain if not domain.startswith("www.") else "https://" + domain[4:],
+        "http://" + domain,
+    ]
+    for u in urls_to_try:
+        x = await fetch(session, u, min(args.timeout, 8), MAX_HTML_BYTES, verify_ssl=False)
         if x[0] and x[2] < 400:
             first = x
             break
@@ -808,11 +801,11 @@ async def scan(session, domain, args):
         methods.append("scripts")
 
     async def scan_subdomains():
-        sub_sem = asyncio.Semaphore(5)
+        sub_sem = asyncio.Semaphore(3)
         async def check_subdomain(sub):
             async with sub_sem:
                 sub_url = "https://" + sub + "." + domain
-                x = await fetch(session, sub_url, min(args.timeout, 6), MAX_HTML_BYTES, retries=1)
+                x = await fetch(session, sub_url, min(args.timeout, 5), MAX_HTML_BYTES, retries=1)
                 if x[0]:
                     _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
                     return detect(corpus, f"subdomain:{sub}"), generic_evidence(corpus, f"subdomain:{sub}")
@@ -825,10 +818,10 @@ async def scan(session, domain, args):
 
     async def scan_paths():
         if not getattr(args, "scan_paths", True): return
-        path_sem = asyncio.Semaphore(5)
+        path_sem = asyncio.Semaphore(3)
         async def check_path(path_url):
             async with path_sem:
-                x = await fetch(session, path_url, min(args.timeout, 7), MAX_HTML_BYTES, retries=1)
+                x = await fetch(session, path_url, min(args.timeout, 5), MAX_HTML_BYTES, retries=1)
                 if x[0] and 200 <= x[2] < 400:
                     _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
                     return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
@@ -843,10 +836,10 @@ async def scan(session, domain, args):
         if not args.deep_scan: return
         deep_soup = BeautifulSoup(html, 'html.parser')
         links = extract_links(url, deep_soup)
-        deep_sem = asyncio.Semaphore(5)
+        deep_sem = asyncio.Semaphore(3)
         async def check_deep(lu):
             async with deep_sem:
-                x = await fetch(session, lu, min(args.timeout, 7), MAX_HTML_BYTES, retries=1)
+                x = await fetch(session, lu, min(args.timeout, 5), MAX_HTML_BYTES, retries=1)
                 if x[0]:
                     _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
                     return detect(corpus, "deep"), generic_evidence(corpus, "deep")
