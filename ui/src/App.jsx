@@ -13,11 +13,18 @@ function App() {
   const [scanError, setScanError] = useState('')
   
   const eventSourceRef = useRef(null)
+  const scanTimeoutRef = useRef(null)
+  const abortReasonRef = useRef('')
 
   const stopScan = () => {
+    abortReasonRef.current = 'Scan cancelled.'
     if (eventSourceRef.current) {
-      eventSourceRef.current.close()
+      eventSourceRef.current.abort()
       eventSourceRef.current = null
+    }
+    if (scanTimeoutRef.current) {
+      clearTimeout(scanTimeoutRef.current)
+      scanTimeoutRef.current = null
     }
     setIsScanning(false)
   }
@@ -32,13 +39,23 @@ function App() {
     setResults([])
     setProgress(null)
     setScanError('')
+    abortReasonRef.current = ''
     setIsScanning(true)
     
     if (eventSourceRef.current) {
-      eventSourceRef.current.close()
+      eventSourceRef.current.abort()
     }
+
+    const controller = new AbortController()
+    eventSourceRef.current = controller
+    // This is a final client-side safety net. The API has its own 25-second
+    // target timeout, but a dropped proxy connection must not lock the UI.
+    scanTimeoutRef.current = setTimeout(() => {
+      abortReasonRef.current = 'Scan stopped after 35 seconds without a result.'
+      controller.abort()
+    }, 35000)
     
-    fetch(url, options)
+    fetch(url, { ...options, signal: controller.signal })
       .then(async response => {
         if (!response.ok) {
           throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
@@ -96,8 +113,17 @@ function App() {
       })
       .catch(err => {
         console.error('Stream error:', err)
-        setScanError(`Scan request failed: ${err.message}`)
+        setScanError(err.name === 'AbortError' ? (abortReasonRef.current || 'Scan cancelled.') : `Scan request failed: ${err.message}`)
         setIsScanning(false)
+      })
+      .finally(() => {
+        if (scanTimeoutRef.current) {
+          clearTimeout(scanTimeoutRef.current)
+          scanTimeoutRef.current = null
+        }
+        if (eventSourceRef.current === controller) {
+          eventSourceRef.current = null
+        }
       })
   }
 

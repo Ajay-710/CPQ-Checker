@@ -26,7 +26,7 @@ app.add_middleware(
 )
 
 MAX_DOMAINS_PER_REQUEST = 250
-MAX_SCAN_SECONDS = 35
+MAX_SCAN_SECONDS = 25
 
 def _get_scanner():
     """Return the loaded scanner; production workers must not reload mid-scan."""
@@ -54,7 +54,7 @@ async def scan_domain_generator(domains: List[str], deep_scan: bool = False, tim
                         "score": 0, "detection_method": "",
                         "scan_time_seconds": MAX_SCAN_SECONDS,
                         "evidence": "No conclusion was reached because the scan exceeded the time limit.",
-                        "error": "Scan timed out after 35 seconds; retry with fewer targets or without deep crawl."
+                        "error": "Scan timed out after 25 seconds; retry with fewer targets or without deep crawl."
                     }
                 except Exception as e:
                     import traceback

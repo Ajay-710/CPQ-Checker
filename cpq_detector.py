@@ -665,8 +665,9 @@ async def scan(session, domain, args):
 
     first = None
     x = None
-    # Try HTTPS first, if fails try HTTP, if fails try HTTPS without SSL verification.
-    urls_to_try = [("https://" + domain, True), ("http://" + domain, True), ("https://" + domain, False)]
+    # Two bounded transport attempts are sufficient for public sites. Avoid a
+    # third insecure retry, which added 10+ seconds to unreachable domains.
+    urls_to_try = [("https://" + domain, True), ("http://" + domain, True)]
     for u, verify in urls_to_try:
         # Do not spend a full request timeout on each HTTPS/HTTP fallback.
         x = await fetch(session, u, min(args.timeout, 10), MAX_HTML_BYTES, verify_ssl=verify)
