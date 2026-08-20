@@ -37,6 +37,9 @@ function App() {
     // However, we can use fetch and read the stream directly.
     fetch(url, options)
       .then(async response => {
+        if (!response.ok) {
+          throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+        }
         const reader = response.body.getReader()
         const decoder = new TextDecoder('utf-8')
         let buffer = ''
