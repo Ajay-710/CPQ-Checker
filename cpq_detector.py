@@ -10,7 +10,7 @@ Multi-signal detection:
   6. iframe/embed source analysis
 """
 import argparse, asyncio, csv, json, os, random, re, signal, sys, time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urldefrag
 import aiohttp, tldextract
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
@@ -24,8 +24,16 @@ MAX_HTML_BYTES = 2_500_000
 MAX_ASSET_BYTES = 1_500_000
 MAX_SCRIPTS = 25
 MAX_LINKS = 20
+MAX_CANDIDATE_PATHS = 14
 SAVE_EVERY = 100
 STOP = False
+
+# A stable browser signature is more reliable than a rotating one.  Some WAFs
+# reject the inconsistent headers produced by random user-agent generators.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 # ---------------------------------------------------------------------------
 # Subdomain wordlist — always probed for every domain
@@ -37,6 +45,16 @@ CPQ_SUBDOMAINS = [
     "catalog", "order", "orders", "pricing",
     "dealer", "dealers", "distributor",
     "selfservice", "myaccount", "eshop",
+]
+
+# Public routes frequently used for a configurator.  They are deliberately
+# small and only checked on the target host; this catches tools that are not
+# linked from the marketing homepage.
+CPQ_PATHS = [
+    "/quote", "/quotes", "/request-a-quote", "/request-quote",
+    "/configurator", "/configure", "/product-configurator", "/builder",
+    "/pricing", "/dealer-portal", "/partner-portal", "/b2b", "/shop",
+    "/catalog", "/rfq",
 ]
 
 # ---------------------------------------------------------------------------
@@ -103,8 +121,10 @@ FINGERPRINTS = {
 
 # --- Tier 2: Mid-market CPQ ---
 "Infor CPQ": {
-    "strong": [r"infor.*cpq", r"infor configure price quote", r"infor configurator", r"infor\.com/cpq"],
-    "medium": [r"infor.*quote"],
+    # Word boundaries prevent "information ... quote" from being classified
+    # as the vendor Infor on ordinary marketing pages.
+    "strong": [r"\binfor\b.*cpq", r"\binfor\b configure price quote", r"\binfor\b configurator", r"infor\.com/cpq"],
+    "medium": [r"\binfor\b.*quote"],
     "domains": ["infor.com"],
     "cookies": [],
     "headers": [],
@@ -446,6 +466,27 @@ def conf(s):
 def snippet(t, a, b):
     return re.sub(r"\s+", " ", t[max(0, a - 120):min(len(t), b + 180)]).strip()
 
+def user_agent():
+    """Return a usable UA even when fake-useragent has no cached data."""
+    try:
+        return ua.random or DEFAULT_USER_AGENT
+    except Exception:
+        return DEFAULT_USER_AGENT
+
+def page_corpus(html, headers="", cookies="", final_url=""):
+    """Include visible content *and* route/attribute metadata in detection.
+
+    SPAs often expose their CPQ vendor only in data attributes, preload links,
+    JSON-LD, or JavaScript URLs.  Restricting generic language to visible text
+    was the largest source of missed detections.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    raw_tags = str(soup.find_all(["script", "meta", "link", "form", "iframe", "a"]))
+    for tag in soup(["script", "style", "noscript"]):
+        tag.extract()
+    visible = soup.get_text(separator=" ", strip=True)
+    return soup, visible, "\n".join([visible, raw_tags, headers, cookies, final_url])
+
 # ---------------------------------------------------------------------------
 # Core detection: regex fingerprints against a text corpus
 # ---------------------------------------------------------------------------
@@ -500,7 +541,7 @@ def detect_headers_cookies(headers_str, cookies_str):
 # ---------------------------------------------------------------------------
 async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
     headers = {
-        'User-Agent': ua.random,
+        'User-Agent': user_agent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -563,13 +604,23 @@ def extract_links(base, soup):
     out = []
     seen = set()
     for a in soup.find_all('a', href=True):
-        u = urljoin(base, a['href'])
-        txt = a.get_text().lower()
+        u = urldefrag(urljoin(base, a['href']))[0]
+        txt = " ".join((a.get_text(" "), a.get("aria-label", ""), a.get("title", ""))).lower()
         if u.startswith(("http://", "https://")) and reg(urlparse(u).netloc) == host and u not in seen:
             if any(k in u.lower() for k in kws) or any(k in txt for k in kws):
                 seen.add(u)
                 out.append(u)
     return out[:MAX_LINKS]
+
+def candidate_paths(base):
+    """Return a bounded set of high-value same-host routes to inspect."""
+    parsed = urlparse(base)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    return [root + path for path in CPQ_PATHS[:MAX_CANDIDATE_PATHS]]
+
+def generic_evidence(corpus, label):
+    m = GENERIC_CPQ_RE.search(corpus)
+    return f"[{label}] GENERIC: {snippet(corpus, m.start(), m.end())}" if m else ""
 
 # ---------------------------------------------------------------------------
 # Main scan function
@@ -608,18 +659,13 @@ async def scan(session, domain, args):
     # -----------------------------------------------------------------------
     soup = BeautifulSoup(html, 'html.parser')
 
-    # Get raw script/meta tags BEFORE extracting them
-    raw_meta_scripts = str(soup.find_all(['script', 'meta', 'link']))
-    
-    # Extract visible text (remove script/style elements first)
-    for tag in soup(["script", "style"]):
-        tag.extract()
-    visible_text = soup.get_text(separator=' ')
-
-    search_corpus = "\n".join([visible_text, raw_meta_scripts, headers, cookies, url])
+    soup, visible_text, search_corpus = page_corpus(html, headers, cookies, url)
 
     hits = detect(search_corpus, "homepage")
-    generic = bool(GENERIC_CPQ_RE.search(visible_text))
+    generic_signals = []
+    homepage_generic = generic_evidence(search_corpus, "homepage")
+    if homepage_generic:
+        generic_signals.append(homepage_generic)
     methods = ["homepage"]
 
     # -----------------------------------------------------------------------
@@ -647,12 +693,17 @@ async def scan(session, domain, args):
     # -----------------------------------------------------------------------
     if args.scan_scripts:
         script_soup = BeautifulSoup(html, 'html.parser')
-        for su in extract_scripts(url, script_soup):
+        script_urls = extract_scripts(url, script_soup)
+        for su in script_urls:
             # First check if the script URL itself contains vendor domains
             url_hits = detect(su, "script_url")
             hits += url_hits
-            # Then fetch and scan script contents
-            x = await fetch(session, su, args.timeout, MAX_ASSET_BYTES)
+        # Asset requests are independent; sequential fetching made one slow CDN
+        # hold up the entire target scan.
+        script_fetches = await asyncio.gather(*[
+            fetch(session, su, min(args.timeout, 12), MAX_ASSET_BYTES) for su in script_urls
+        ])
+        for x in script_fetches:
             if x[0]:
                 hits += detect(x[3] + "\n" + x[1], "script")
         methods.append("scripts")
@@ -664,23 +715,37 @@ async def scan(session, domain, args):
         sub_url = "https://" + sub + "." + domain
         x = await fetch(session, sub_url, args.timeout, MAX_HTML_BYTES)
         if x[0]:
-            psoup = BeautifulSoup(x[3], 'html.parser')
-            ptext = psoup.get_text(separator=' ')
-            raw_tags = str(psoup.find_all(['script', 'meta']))
-            corpus = "\n".join([ptext, raw_tags, x[4], x[1]])
+            _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
             res = detect(corpus, f"subdomain:{sub}")
-            gen = bool(GENERIC_CPQ_RE.search(ptext))
-            return res, gen
-        return [], False
+            return res, generic_evidence(corpus, f"subdomain:{sub}")
+        return [], ""
 
     sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
     for s_hits, s_gen in sub_results:
         hits += s_hits
-        generic = generic or s_gen
+        if s_gen:
+            generic_signals.append(s_gen)
     methods.append("subdomains")
 
+    # Signal 6: probe a small set of common configurator routes.  Run in
+    # parallel and only retain successful CPQ evidence, so normal 404s do not
+    # affect the result.
+    if getattr(args, "scan_paths", True):
+        async def check_path(path_url):
+            x = await fetch(session, path_url, min(args.timeout, 10), MAX_HTML_BYTES)
+            if x[0] and 200 <= x[2] < 400:
+                _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
+                return detect(corpus, "known_path"), generic_evidence(corpus, "known_path")
+            return [], ""
+        path_results = await asyncio.gather(*[check_path(p) for p in candidate_paths(url)])
+        for p_hits, p_generic in path_results:
+            hits += p_hits
+            if p_generic:
+                generic_signals.append(p_generic)
+        methods.append("paths")
+
     # -----------------------------------------------------------------------
-    # Signal 6: Deep link crawling (optional, but more thorough)
+    # Signal 7: Deep link crawling (optional, but more thorough)
     # -----------------------------------------------------------------------
     if args.deep_scan:
         deep_soup = BeautifulSoup(html, 'html.parser')
@@ -689,12 +754,11 @@ async def scan(session, domain, args):
                 break
             x = await fetch(session, lu, args.timeout, MAX_HTML_BYTES)
             if x[0]:
-                page_soup = BeautifulSoup(x[3], 'html.parser')
-                page_text = page_soup.get_text(separator=' ')
-                raw_tags = str(page_soup.find_all(['script', 'meta']))
-                corpus = "\n".join([page_text, raw_tags, x[4], x[1]])
+                _, _, corpus = page_corpus(x[3], x[4], x[5], x[1])
                 hits += detect(corpus, "deep")
-                generic = generic or bool(GENERIC_CPQ_RE.search(page_text))
+                deep_generic = generic_evidence(corpus, "deep")
+                if deep_generic:
+                    generic_signals.append(deep_generic)
         methods.append("deep")
 
     # -----------------------------------------------------------------------
@@ -716,12 +780,13 @@ async def scan(session, domain, args):
             score=s,
             evidence=" | ".join(list(dict.fromkeys(merged[v][1]))[:8])
         )
-    elif generic:
+    elif generic_signals:
         result.update(
             cpq_detected="YES",
             confidence="POSSIBLE",
             score=15,
-            evidence="Generic CPQ/configure-price-quote language found; vendor not identified"
+            cpq_vendor="Generic CPQ / B2B commerce",
+            evidence=" | ".join(list(dict.fromkeys(generic_signals))[:4])
         )
 
     result["cpq_detected"] = "YES" if result["confidence"] != "NOT_DETECTED" else "NO"
@@ -849,7 +914,9 @@ def main():
     p.add_argument("--timeout", type=int, default=20)
     p.add_argument("--deep-scan", action="store_true")
     p.add_argument("--no-script-scan", dest="scan_scripts", action="store_false")
-    p.set_defaults(scan_scripts=True)
+    p.add_argument("--no-path-scan", dest="scan_paths", action="store_false",
+                   help="skip common quote/configurator routes for a faster scan")
+    p.set_defaults(scan_scripts=True, scan_paths=True)
     p.add_argument("--resume", action="store_true")
     a = p.parse_args()
     if not os.path.exists(a.input):
