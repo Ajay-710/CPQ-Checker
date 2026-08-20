@@ -801,6 +801,7 @@ async def scan(session, domain, args):
         methods.append("scripts")
 
     async def scan_subdomains():
+        sub_list = CPQ_SUBDOMAINS if args.deep_scan or getattr(args, "scan_subdomains", False) else ["quote", "cpq", "configure", "portal", "shop", "b2b"]
         sub_sem = asyncio.Semaphore(3)
         async def check_subdomain(sub):
             async with sub_sem:
@@ -810,7 +811,7 @@ async def scan(session, domain, args):
                     _, ptext, corpus = page_corpus(x[3], x[4], "", x[1])
                     return detect(corpus, f"subdomain:{sub}"), generic_evidence(corpus, f"subdomain:{sub}")
                 return [], []
-        sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in CPQ_SUBDOMAINS])
+        sub_results = await asyncio.gather(*[check_subdomain(sub) for sub in sub_list])
         for s_hits, s_gen in sub_results:
             hits.extend(s_hits)
             generic_signals.extend(s_gen)

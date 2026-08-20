@@ -2,33 +2,18 @@ import asyncio, aiohttp, types, time
 from cpq_detector import scan
 
 async def main():
-    args = types.SimpleNamespace(timeout=15, scan_scripts=True, deep_scan=False, scan_paths=False, scan_subdomains=False)
-    connector = aiohttp.TCPConnector(limit=100, limit_per_host=3, ttl_dns_cache=300)
-    semaphore = asyncio.Semaphore(4)
-    
-    domains = [
-        'nishat.net', 'bostondynamics.com', 'solisinverters.com',
-        'universal-robots.com', 'chintglobal.com', 'yunustextile.com',
-        'fanucamerica.com', 'solaredge.com', 'tridentindia.com',
-        'goodwe.com', 'vitra.com', 'acimotors-bd.com', 'elsewedyelectric.com',
-        'tenneco.com', 'msnlabs.com'
-    ]
-    
-    async with aiohttp.ClientSession(connector=connector) as s:
-        async def run_d(d):
-            async with semaphore:
-                t0 = time.time()
-                res = await scan(s, d, args)
-                print(f"[{time.time()-t0:.2f}s] {d}: {res.get('confidence')} | {res.get('cpq_vendor')} | {res.get('evidence')[:60]}")
-                return res
-
-        t_start = time.time()
-        print(f"Starting batch test of {len(domains)} domains with Semaphore(4)...")
-        results = await asyncio.gather(*[run_d(d) for d in domains])
-        print(f"\nALL {len(domains)} DOMAINS FINISHED in {time.time()-t_start:.2f} seconds!")
+    async with aiohttp.ClientSession() as s:
+        print("--- Standard Scan ---")
+        args1 = types.SimpleNamespace(timeout=10, scan_scripts=True, deep_scan=False, scan_paths=False, scan_subdomains=False)
+        t0 = time.time()
+        res1 = await scan(s, 'universal-robots.com', args1)
+        print(f"Standard: {res1.get('confidence')} | {res1.get('cpq_vendor')} | time={time.time()-t0:.2f}s")
         
-        failed = [r for r in results if r.get('confidence') == 'SCAN_FAILED']
-        print(f"Failed count: {len(failed)} / {len(domains)}")
+        print("\n--- Deep Scan ---")
+        args2 = types.SimpleNamespace(timeout=10, scan_scripts=True, deep_scan=True, scan_paths=True, scan_subdomains=True)
+        t0 = time.time()
+        res2 = await scan(s, 'universal-robots.com', args2)
+        print(f"Deep: {res2.get('confidence')} | {res2.get('cpq_vendor')} | time={time.time()-t0:.2f}s")
 
 if __name__ == '__main__':
     asyncio.run(main())
