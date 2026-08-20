@@ -21,8 +21,8 @@ CHECKPOINT_FILE = "cpq_checkpoint.json"
 RESULTS_FILE = "cpq_results.csv"
 ERRORS_FILE = "cpq_errors.csv"
 MAX_HTML_BYTES = 2_500_000
-MAX_ASSET_BYTES = 1_500_000
-MAX_SCRIPTS = 12
+MAX_ASSET_BYTES = 500_000
+MAX_SCRIPTS = 8
 MAX_LINKS = 20
 MAX_CANDIDATE_PATHS = 14
 SAVE_EVERY = 100
@@ -544,7 +544,10 @@ async def fetch(session, url, timeout, max_bytes, verify_ssl=True):
         'User-Agent': user_agent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
+        # Do not advertise Brotli unless the optional decoder is guaranteed to
+        # be installed. A response encoded as `br` otherwise fails before its
+        # HTML can be inspected (aiohttp ClientResponseError 400).
+        'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Dest': 'document',
@@ -665,15 +668,23 @@ async def scan(session, domain, args):
 
     first = None
     x = None
-    # Two bounded transport attempts are sufficient for public sites. Avoid a
-    # third insecure retry, which added 10+ seconds to unreachable domains.
-    urls_to_try = [("https://" + domain, True), ("http://" + domain, True)]
+    # Prefer modern HTTPS endpoints; most sites that do not serve the apex
+    # host serve `www`. This keeps a failed host from consuming the full scan
+    # budget before content inspection begins.
+    urls_to_try = [("https://" + domain, True)]
     for u, verify in urls_to_try:
         # Do not spend a full request timeout on each HTTPS/HTTP fallback.
-        x = await fetch(session, u, min(args.timeout, 10), MAX_HTML_BYTES, verify_ssl=verify)
+        x = await fetch(session, u, min(args.timeout, 7), MAX_HTML_BYTES, verify_ssl=verify)
         if x[0]:
             first = x
             break
+
+    # Some sites expose the public application only on www even though the
+    # apex host accepts DNS but never completes HTTP/TLS.
+    if not first and not domain.startswith("www."):
+        x = await fetch(session, "https://www." + domain, min(args.timeout, 6), MAX_HTML_BYTES)
+        if x[0]:
+            first = x
 
     if not first:
         result.update(
@@ -744,7 +755,7 @@ async def scan(session, domain, args):
         # Asset requests are independent; sequential fetching made one slow CDN
         # hold up the entire target scan.
         script_fetches = await asyncio.gather(*[
-            fetch(session, su, min(args.timeout, 12), MAX_ASSET_BYTES) for su in script_urls
+            fetch(session, su, min(args.timeout, 5), MAX_ASSET_BYTES) for su in script_urls
         ])
         for x in script_fetches:
             if x[0]:

@@ -6,3 +6,4 @@ python-multipart
 sse-starlette
 beautifulsoup4
 fake-useragent
+Brotli
