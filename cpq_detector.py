@@ -668,23 +668,26 @@ async def scan(session, domain, args):
 
     first = None
     x = None
+    blocked_responses = []
     # Prefer modern HTTPS endpoints; most sites that do not serve the apex
     # host serve `www`. This keeps a failed host from consuming the full scan
     # budget before content inspection begins.
     urls_to_try = [("https://" + domain, True)]
+    if not domain.startswith("www."):
+        urls_to_try.append(("https://www." + domain, True))
     for u, verify in urls_to_try:
         # Do not spend a full request timeout on each HTTPS/HTTP fallback.
         x = await fetch(session, u, min(args.timeout, 7), MAX_HTML_BYTES, verify_ssl=verify)
-        if x[0]:
+        if x[0] and x[2] < 400:
             first = x
             break
-
-    # Some sites expose the public application only on www even though the
-    # apex host accepts DNS but never completes HTTP/TLS.
-    if not first and not domain.startswith("www."):
-        x = await fetch(session, "https://www." + domain, min(args.timeout, 6), MAX_HTML_BYTES)
         if x[0]:
-            first = x
+            blocked_responses.append(x)
+
+    # Retain the best blocked response for a truthful ACCESS_RESTRICTED
+    # outcome only after every public hostname option was attempted.
+    if not first and blocked_responses:
+        first = blocked_responses[0]
 
     if not first:
         result.update(

@@ -166,7 +166,7 @@ function App() {
       'POSSIBLE': 'possible',
       'NOT_DETECTED': 'none',
       'SCAN_FAILED': 'error',
-      'ACCESS_RESTRICTED': 'error'
+      'ACCESS_RESTRICTED': 'restricted'
     }
     const c = map[confidence] || 'error'
     return <span className={`badge ${c}`}>{confidence}</span>

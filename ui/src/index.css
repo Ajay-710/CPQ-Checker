@@ -312,6 +312,12 @@ tr:hover td {
   border-color: #991b1b;
 }
 
+.badge.restricted {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #92400e;
+}
+
 /* Evidence cell */
 .evidence-cell {
   max-width: 320px;
