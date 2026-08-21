@@ -7,3 +7,4 @@ sse-starlette
 beautifulsoup4
 fake-useragent
 Brotli
+playwright>=1.40.0

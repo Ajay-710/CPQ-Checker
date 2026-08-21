@@ -679,6 +679,148 @@ def target_vendor(domain):
     return None
 
 # ---------------------------------------------------------------------------
+# Playwright Browser Engine for 403 / WAF Bypass & Dynamic JS Inspection
+# ---------------------------------------------------------------------------
+_PLAYWRIGHT_INSTANCE = None
+_PLAYWRIGHT_BROWSER = None
+_PLAYWRIGHT_LOCK = asyncio.Lock()
+_PLAYWRIGHT_SEM = None
+
+def get_playwright_sem():
+    global _PLAYWRIGHT_SEM
+    if _PLAYWRIGHT_SEM is None:
+        _PLAYWRIGHT_SEM = asyncio.Semaphore(2)
+    return _PLAYWRIGHT_SEM
+
+async def get_playwright_browser():
+    global _PLAYWRIGHT_INSTANCE, _PLAYWRIGHT_BROWSER
+    if _PLAYWRIGHT_BROWSER is None or not _PLAYWRIGHT_BROWSER.is_connected():
+        async with _PLAYWRIGHT_LOCK:
+            if _PLAYWRIGHT_BROWSER is None or not _PLAYWRIGHT_BROWSER.is_connected():
+                try:
+                    from playwright.async_api import async_playwright
+                    _PLAYWRIGHT_INSTANCE = await async_playwright().start()
+                    _PLAYWRIGHT_BROWSER = await _PLAYWRIGHT_INSTANCE.chromium.launch(
+                        headless=True,
+                        args=[
+                            '--disable-blink-features=AutomationControlled',
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-accelerated-2d-canvas',
+                            '--no-first-run',
+                            '--no-zygote',
+                            '--disable-gpu',
+                        ]
+                    )
+                except Exception as e:
+                    print(f"[Playwright] Failed to initialize browser: {e}")
+                    return None
+    return _PLAYWRIGHT_BROWSER
+
+async def scan_with_playwright(domain, url, args, start_time):
+    """Fallback scanner using headless Chromium to bypass WAFs and execute JS."""
+    sem = get_playwright_sem()
+    async with sem:
+        browser = await get_playwright_browser()
+        if not browser:
+            return None
+
+        context = None
+        try:
+            ua_str = random.choice(USER_AGENTS) if USER_AGENTS else DEFAULT_USER_AGENT
+            context = await browser.new_context(
+                user_agent=ua_str,
+                viewport={'width': 1920, 'height': 1080},
+                locale='en-US'
+            )
+            page = await context.new_page()
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+            intercepted_urls = []
+            def on_response(response):
+                try:
+                    u = response.url
+                    if u.startswith(("http://", "https://")):
+                        intercepted_urls.append(u)
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            target = url or f"https://{domain}"
+            response = await page.goto(target, timeout=min(args.timeout * 1000, 25000), wait_until="domcontentloaded")
+            
+            # Wait briefly for dynamic scripts or challenge completion
+            await asyncio.sleep(2)
+
+            final_url = page.url
+            html = await page.content()
+            title = await page.title()
+            cookies_list = await context.cookies()
+            cookies_str = "\n".join(f"{c.get('name')}: {c.get('value')}" for c in cookies_list)
+            status_code = response.status if response else 200
+
+            # If still stuck on a challenge page or empty, don't claim success
+            if "Just a moment..." in title and len(html) < 30000:
+                await context.close()
+                return None
+
+            soup, visible_text, search_corpus = page_corpus(html, "", cookies_str, final_url)
+            hits = detect(search_corpus, "playwright_dom")
+            generic_signals = generic_evidence(search_corpus, "playwright_dom")
+
+            # Detect against all intercepted network/script requests
+            for req_url in intercepted_urls:
+                hits += detect(req_url, "playwright_network")
+
+            merged = {}
+            for v, s, e in hits:
+                if v not in merged:
+                    merged[v] = [0, []]
+                merged[v][0] = min(100, merged[v][0] + s)
+                merged[v][1] += e
+
+            result = {
+                "domain": domain, "final_url": final_url, "http_status": status_code,
+                "cpq_detected": "NO", "cpq_vendor": "", "confidence": "NOT_DETECTED",
+                "score": 0, "detection_method": "playwright-browser", "evidence": "",
+                "scan_time_seconds": round(time.perf_counter() - start_time, 2), "error": ""
+            }
+
+            if merged:
+                v = max(merged, key=lambda z: merged[z][0])
+                s = merged[v][0]
+                result.update(
+                    cpq_detected="YES",
+                    cpq_vendor=v,
+                    confidence=conf(s),
+                    score=s,
+                    evidence=" | ".join(list(dict.fromkeys(merged[v][1]))[:8])
+                )
+            elif generic_signals:
+                unique_signals = list(dict.fromkeys(generic_signals))
+                score = 15 if len(unique_signals) == 1 else min(45, 15 + (len(unique_signals) * 10))
+                result.update(
+                    cpq_detected="YES",
+                    confidence=conf(score),
+                    score=score,
+                    cpq_vendor="Generic CPQ / B2B commerce",
+                    evidence=" | ".join(unique_signals[:8])
+                )
+
+            await context.close()
+            return result
+        except Exception as e:
+            print(f"[Playwright] Error scanning {domain}: {e}")
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            return None
+
+# ---------------------------------------------------------------------------
 # Main scan function
 # ---------------------------------------------------------------------------
 async def scan(session, domain, args):
@@ -728,6 +870,11 @@ async def scan(session, domain, args):
         first = blocked_responses[0]
 
     if not first:
+        # Before failing completely, try Playwright as last resort
+        pw_res = await scan_with_playwright(domain, f"https://{domain}", args, start)
+        if pw_res:
+            return pw_res
+
         result.update(
             cpq_detected="UNKNOWN", confidence="SCAN_FAILED",
             evidence="No HTTP response was received; this is not a negative CPQ finding.",
@@ -740,8 +887,12 @@ async def scan(session, domain, args):
     result.update(final_url=url, http_status=status)
 
     # A WAF, login wall, or rate limit prevents a defensible negative result.
-    # Preserve the HTTP status and make the uncertainty explicit.
+    # Seamlessly escalate to Playwright browser before reporting ACCESS_RESTRICTED.
     if status in (401, 403, 429):
+        pw_res = await scan_with_playwright(domain, url, args, start)
+        if pw_res:
+            return pw_res
+
         result.update(
             cpq_detected="UNKNOWN", confidence="ACCESS_RESTRICTED",
             evidence=f"HTTP {status} prevented public-content inspection; this is not a negative CPQ finding."
